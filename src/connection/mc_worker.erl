@@ -36,16 +36,24 @@ hibernate(Worker) ->
 disconnect(Worker) ->
   gen_server:cast(Worker, halt).
 
+
 init(Options) ->
   proc_lib:init_ack({ok, self()}),
-  {ok, Socket} = mc_auth:connect_to_database(Options),
-  ConnState = form_state(Options),
-  try_register(Options),
-  NetModule = get_set_opts_module(Options),
-  Login = mc_utils:get_value(login, Options),
-  Password = mc_utils:get_value(password, Options),
-  mc_auth:auth(Socket, Login, Password, ConnState#conn_state.database, NetModule),
-  gen_server:enter_loop(?MODULE, [], #state{socket = Socket, conn_state = ConnState, net_module = NetModule}).
+  case mc_auth:connect_to_database(Options) of
+    {error, _}->
+      io:format("mongo conn error"),
+      timer:sleep(5000),
+      %maps:get(<<"a">>, #{}),
+      erlang:error(mongodb_conn_fail);
+    {ok, Socket}->
+      ConnState = form_state(Options),
+      try_register(Options),
+      NetModule = get_set_opts_module(Options),
+      Login = mc_utils:get_value(login, Options),
+      Password = mc_utils:get_value(password, Options),
+      mc_auth:auth(Socket, Login, Password, ConnState#conn_state.database, NetModule),
+      gen_server:enter_loop(?MODULE, [], #state{socket = Socket, conn_state = ConnState, net_module = NetModule})
+  end.
 
 handle_call(NewState = #conn_state{}, _, State = #state{conn_state = OldState}) ->  % update state, return old
   {reply, {ok, OldState}, State#state{conn_state = NewState}};
