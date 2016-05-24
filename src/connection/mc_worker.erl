@@ -44,7 +44,7 @@ init(Options) ->
       %io:format("mongo conn error"),
       timer:sleep(5000),
       %maps:get(<<"a">>, #{}),
-      elarm:raise(mongodb_conn_fail, "mongodb", [{severity, critical},{probable_cause, <<"network, hd, system">>}]),
+      elarm:raise(mongodb_conn_fail, "mongodb", []),
       erlang:error(mongodb_conn_fail);
     {ok, Socket}->
       ConnState = form_state(Options),
