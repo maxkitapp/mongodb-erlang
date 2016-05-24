@@ -41,7 +41,7 @@ init(Options) ->
   proc_lib:init_ack({ok, self()}),
   case mc_auth:connect_to_database(Options) of
     {error, _}->
-      io:format("mongo conn error"),
+      %io:format("mongo conn error"),
       timer:sleep(5000),
       %maps:get(<<"a">>, #{}),
       erlang:error(mongodb_conn_fail);
