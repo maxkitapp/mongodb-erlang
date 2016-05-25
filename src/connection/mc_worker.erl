@@ -41,10 +41,9 @@ init(Options) ->
   proc_lib:init_ack({ok, self()}),
   case mc_auth:connect_to_database(Options) of
     {error, _}->
-      %io:format("mongo conn error"),
       timer:sleep(5000),
-      %maps:get(<<"a">>, #{}),
-      elarm:raise(mongodb_conn_fail, "mongodb", []),
+      %elarm:raise(mongodb_conn_fail, "mongodb", []),
+      lz_alarm:raise_mongodb_conn_fail(),
       erlang:error(mongodb_conn_fail);
     {ok, Socket}->
       ConnState = form_state(Options),
