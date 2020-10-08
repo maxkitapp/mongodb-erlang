@@ -3,232 +3,381 @@
 
 -module(mc_worker_api).
 
+-include("mongo_types.hrl").
 -include("mongo_protocol.hrl").
 
 -export([
+  connect/0,
   connect/1,
   disconnect/1,
+  get_version/1,
+  database/2,
   insert/3,
   update/4,
   update/6,
+  delete/1,
   delete/3,
   delete_one/3,
   delete_limit/4,
+  delete_limit/5,
+  delete_limit/6,
   insert/4,
+  insert/5,
+  insert/1,
   update/7,
-  delete_limit/5]).
+  update/8,
+  update/1]).
 
 -export([
   find_one/3,
   find_one/4,
+  find_one/5,
+  find_one/1,
   find/3,
-  find/4
-]).
+  find/4,
+  find/5,
+  find/2,
+  find/1,
+  find_one/2]).
 -export([
+  count/1,
   count/3,
-  count/4
-]).
+  count/4,
+  count/2]).
 -export([
   command/2,
-  sync_command/4,
+  command/3,
+  command/4,
   ensure_index/3,
-  prepare/2]).
+  ensure_index/4]).
 
-
--type cursorid() :: integer().
--type selector() :: bson:document() | map().
--type projector() :: bson:document() | map().
--type skip() :: integer().
--type batchsize() :: integer(). % 0 = default batch size. negative closes cursor
--type modifier() :: bson:document() | map().
--type connection() :: pid().
--type args() :: [arg()].
--type arg() :: {database, database()}
-| {login, binary()}
-| {password, binary()}
-| {w_mode, write_mode()}
-| {r_mode, read_mode()}
-| {host, list()}
-| {port, integer()}
-| {ssl, boolean()}
-| {ssl_opts, proplists:proplist()}
-| {register, atom() | fun()}.
--type write_mode() :: unsafe | safe | {safe, bson:document()}.
--type read_mode() :: master | slave_ok.
--type service() :: {Host :: inet:hostname() | inet:ip_address(), Post :: 0..65535}.
--type options() :: [option()].
--type option() :: {timeout, timeout()} | {ssl, boolean()} | ssl | {database, database()} | {read_mode, read_mode()} | {write_mode, write_mode()}.
--type cursor() :: pid().
-
--export_type([
-  connection/0,
-  service/0,
-  options/0,
-  args/0,
-  cursorid/0,
-  projector/0,
-  selector/0,
-  skip/0,
-  batchsize/0,
-  modifier/0,
-  write_mode/0,
-  read_mode/0,
-  cursor/0]).
-
+%% @doc shortcut for connect/1 with default params.
+connect() ->
+  connect([]).
 
 %% @doc Make one connection to server, return its pid
 -spec connect(args()) -> {ok, pid()}.
-connect(Args) ->
-  mc_worker:start_link(Args).
+connect(Args) ->  % TODO args as map
+  {ok, Connection} = mc_worker:start_link(Args),
+  Login = mc_utils:get_value(login, Args),
+  Password = mc_utils:get_value(password, Args),
+  case (Login /= undefined) and (Password /= undefined) of
+    true ->
+      AuthSource = mc_utils:get_value(auth_source, Args, <<"admin">>),
+      Version = get_version(Connection),
+      mc_auth_logic:auth(Connection, Version, AuthSource, Login, Password);
+    false -> ok
+  end,
+  {ok, Connection}.
 
 -spec disconnect(pid()) -> ok.
 disconnect(Connection) ->
   mc_worker:disconnect(Connection).
 
+%% @doc Switch database
+-spec database(pid(), database()) -> ok.
+database(Connection, Database) ->
+  mc_worker:database(Connection, Database).
+
+%% Get server version.
+-spec get_version(pid()) -> float().
+get_version(Connection) ->
+  {true, #{<<"version">> := Version}} = command(Connection, {<<"buildinfo">>, 1}),
+  {VFloat, _} = string:to_float(binary_to_list(Version)),
+  VFloat.
+
+%% @deprecated
 %% @doc Insert a document or multiple documents into a collection.
 %%      Returns the document or documents with an auto-generated _id if missing.
--spec insert(pid(), collection(), list() | map() | bson:document()) -> {{boolean(), map()}, list()}.
-insert(Connection, Coll, Doc) when is_tuple(Doc); is_map(Doc) ->
-  {Res, [UDoc | _]} = insert(Connection, Coll, [Doc]),
-  {Res, UDoc};
+-spec insert(pid(), collection(), bson:document()) -> {{boolean(), map()}, bson:document()};
+    (pid(), collection(), map()) -> {{boolean(), map()}, map()};
+    (pid(), collection(), list()) -> {{boolean(), map()}, list()}.
 insert(Connection, Coll, Docs) ->
-  Converted = prepare(Docs, fun assign_id/1),
-  {command(Connection, {<<"insert">>, Coll, <<"documents">>, Converted}), Converted}.
+  insert(Connection, Coll, Docs, {<<"w">>, 1}).
 
--spec insert(pid(), collection(), list() | map() | bson:document(), bson:document()) -> {{boolean(), map()}, list()}.
-insert(Connection, Coll, Doc, WC) when is_tuple(Doc); is_map(Doc) ->
-  {Res, [UDoc | _]} = insert(Connection, Coll, [Doc], WC),
+%% @deprecated
+insert(Connection, Coll, Doc, WC) ->
+  insert(Connection, Coll, Doc, WC, undefined).
+
+%% @deprecated
+-spec insert(pid(), collection(), bson:document(), bson:document(), database() | undefined) -> {{boolean(), map()}, bson:document()};
+    (pid(), collection(), map(), bson:document(), database() | undefined) -> {{boolean(), map()}, map()};
+    (pid(), collection(), list(), bson:document(), database() | undefined) -> {{boolean(), map()}, list()}.
+insert(Connection, Coll, Doc, WC, DB) when is_tuple(Doc); is_map(Doc) ->
+  {Res, [UDoc | _]} = insert(Connection, Coll, [Doc], WC, DB),
   {Res, UDoc};
-insert(Connection, Coll, Docs, WC) ->
+insert(Connection, Coll, Docs, WC, DB) ->
   Converted = prepare(Docs, fun assign_id/1),
-  {command(Connection, {<<"insert">>, Coll, <<"documents">>, Converted, <<"writeConcern">>, WC}), Converted}.
+  {command(DB, Connection, {<<"insert">>, Coll, <<"documents">>, Converted, <<"writeConcern">>, WC}), Converted}.
 
+%% @doc Insert one document or multiple documents into a colleciton.
+%% params:
+%%  connection - mc_worker pid
+%%  collection - collection()
+%%  doc - bson:document() or list
+%%  database - insert in this database (optional)
+%%  write_concern - bson:document()
+insert(Cmd = #{connection := Connection, collection := Collection, doc := Doc}) ->
+  WC = maps:get(write_concern, Cmd, {<<"w">>, 1}),
+  DB = maps:get(database, Cmd, undefined),
+  insert(Connection, Collection, Doc, WC, DB).
+
+%% @deprecated
 %% @doc Replace the document matching criteria entirely with the new Document.
--spec update(pid(), collection(), selector(), map()) -> {boolean(), map()}.
+-spec update(pid(), collection(), selector(), map() | bson:document()) -> {boolean(), map()}.
 update(Connection, Coll, Selector, Doc) ->
   update(Connection, Coll, Selector, Doc, false, false).
 
+%% @deprecated
 %% @doc Replace the document matching criteria entirely with the new Document.
--spec update(pid(), collection(), selector(), map(), boolean(), boolean()) -> {boolean(), map()}.
+-spec update(pid(), collection(), selector(), map() | bson:document(), boolean(), boolean()) -> {boolean(), map()}.
 update(Connection, Coll, Selector, Doc, Upsert, MultiUpdate) ->
   Converted = prepare(Doc, fun(D) -> D end),
   command(Connection, {<<"update">>, Coll, <<"updates">>,
     [#{<<"q">> => Selector, <<"u">> => Converted, <<"upsert">> => Upsert, <<"multi">> => MultiUpdate}]}).
 
+%% @deprecated
 %% @doc Replace the document matching criteria entirely with the new Document.
--spec update(pid(), collection(), selector(), map(), boolean(), boolean(), bson:document()) -> {boolean(), map()}.
+-spec update(pid(), collection(), selector(), map() | bson:document(), boolean(), boolean(), bson:document()) -> {boolean(), map()}.
 update(Connection, Coll, Selector, Doc, Upsert, MultiUpdate, WC) ->
+  update(Connection, Coll, Selector, Doc, Upsert, MultiUpdate, WC, undefined).
+
+%% @deprecated
+%% @doc Replace the document matching criteria entirely with the new Document.
+-spec update(pid(), collection(), selector(), map() | bson:document(), boolean(), boolean(), bson:document(), database()) -> {boolean(), map()}.
+update(Connection, Coll, Selector, Doc, Upsert, MultiUpdate, WC, DB) ->
   Converted = prepare(Doc, fun(D) -> D end),
-  command(Connection, {<<"update">>, Coll, <<"updates">>,
+  command(DB, Connection, {<<"update">>, Coll, <<"updates">>,
     [#{<<"q">> => Selector, <<"u">> => Converted, <<"upsert">> => Upsert, <<"multi">> => MultiUpdate}],
     <<"writeConcern">>, WC}).
 
+%% @doc Replace the document matching criteria entirely with the new Document.
+%% params:
+%%  connection - mc_worker pid
+%%  collection - collection()
+%%  selector - selector()
+%%  doc - bson:document() or list
+%%  database - insert in this database (optional)
+%%  upsert - boolean() do upsert
+%%  multi - boolean() multiupdate
+%%  write_concern - bson:document()
+update(Cmd = #{connection := Connection, collection := Collection, selector := Selector, doc := Doc}) ->
+  Upsert = maps:get(upsert, Cmd, false),
+  MultiUpdate = maps:get(multi, Cmd, false),
+  WC = maps:get(write_concern, Cmd, {<<"w">>, 1}),
+  DB = maps:get(database, Cmd, undefined),
+  update(Connection, Collection, Selector, Doc, Upsert, MultiUpdate, WC, DB).
+
+%% @deprecated
 %% @doc Delete selected documents
 -spec delete(pid(), collection(), selector()) -> {boolean(), map()}.
 delete(Connection, Coll, Selector) ->
   delete_limit(Connection, Coll, Selector, 0).
 
+%% @deprecated
 %% @doc Delete first selected document.
 -spec delete_one(pid(), collection(), selector()) -> {boolean(), map()}.
 delete_one(Connection, Coll, Selector) ->
   delete_limit(Connection, Coll, Selector, 1).
 
+%% @deprecated
 %% @doc Delete selected documents
 -spec delete_limit(pid(), collection(), selector(), integer()) -> {boolean(), map()}.
 delete_limit(Connection, Coll, Selector, N) ->
   command(Connection, {<<"delete">>, Coll, <<"deletes">>,
     [#{<<"q">> => Selector, <<"limit">> => N}]}).
 
+%% @deprecated
 %% @doc Delete selected documents
 -spec delete_limit(pid(), collection(), selector(), integer(), bson:document()) -> {boolean(), map()}.
 delete_limit(Connection, Coll, Selector, N, WC) ->
-  command(Connection, {<<"delete">>, Coll, <<"deletes">>,
+  delete_limit(Connection, Coll, Selector, N, WC, undefined).
+
+%% @deprecated
+%% @doc Delete selected documents
+-spec delete_limit(pid(), collection(), selector(), integer(), bson:document(), database()) -> {boolean(), map()}.
+delete_limit(Connection, Coll, Selector, N, WC, DB) ->
+  command(DB, Connection, {<<"delete">>, Coll, <<"deletes">>,
     [#{<<"q">> => Selector, <<"limit">> => N}], <<"writeConcern">>, WC}).
 
+%% @doc Delete selected documents
+%% params:
+%%  connection - mc_worker pid
+%%  collection - collection()
+%%  selector - selector()
+%%  database - insert in this database (optional)
+%%  num - int() number of documents (optional). 0 = all (default)
+%%  write_concern - bson:document()
+delete(Cmd = #{connection := Connection, collection := Collection, selector := Selector}) ->
+  DB = maps:get(database, Cmd, undefined),
+  N = maps:get(num, Cmd, 0),
+  WC = maps:get(write_concern, Cmd, {<<"w">>, 1}),
+  delete_limit(Connection, Collection, Selector, N, WC, DB).
+
 %% @doc Return first selected document, if any
--spec find_one(pid(), colldb(), selector()) -> map().
+-spec find_one(pid(), colldb(), selector()) -> map() | undefined.
 find_one(Connection, Coll, Selector) ->
   find_one(Connection, Coll, Selector, #{}).
 
 %% @doc Return first selected document, if any
--spec find_one(pid(), colldb(), selector(), map()) -> map().
+-spec find_one(pid(), colldb(), selector(), map()) -> map() | undefined.
 find_one(Connection, Coll, Selector, Args) ->
+  find_one(Connection, Coll, Selector, Args, undefined).
+
+%% @doc Return first selected document, if any
+-spec find_one(pid(), colldb(), selector(), map(), database()) -> map() | undefined.
+find_one(Connection, Coll, Selector, Args, Db) ->
   Projector = maps:get(projector, Args, #{}),
   Skip = maps:get(skip, Args, 0),
-  mc_action_man:read_one(Connection, #'query'{
-    collection = Coll,
-    selector = Selector,
-    projector = Projector,
-    skip = Skip
-  }).
+  ReadPref = maps:get(readopts, Args, #{<<"mode">> => <<"primary">>}),
+  find_one(Connection,
+    #'query'{
+      database = Db,
+      collection = Coll,
+      selector = mongoc:append_read_preference(Selector, ReadPref),
+      projector = Projector,
+      skip = Skip
+    }).
 
+%% @doc Return projection of selected documents.
+%% params:
+%%  connection - mc_worker pid
+%%  collection - collection()
+%%  selector - selector()
+%%  database - insert in this database (optional)
+%%  projector - bson:document() optional
+%%  skip - int() optional
+%%  readopts - bson:document() optional
+find_one(Cmd = #{connection := Connection, collection := Collection, selector := Selector}) ->
+  DB = maps:get(database, Cmd, undefined),
+  find_one(Connection, Collection, Selector, Cmd, DB).
+
+-spec find_one(pid() | atom(), query()) -> map() | undefined.
+find_one(Connection, Query) when is_record(Query, query) ->
+  mc_connection_man:read_one(Connection, Query).
+
+%% @deprecated
 %% @doc Return selected documents.
--spec find(pid(), colldb(), selector()) -> cursor().
+-spec find(pid(), colldb(), selector()) -> {ok, cursor()} | [].
 find(Connection, Coll, Selector) ->
   find(Connection, Coll, Selector, #{}).
 
+%% @deprecated
+-spec find(pid(), colldb(), selector(), map()) -> {ok, cursor()} | [].
+find(Connection, Coll, Selector, Args) ->
+  find(Connection, Coll, Selector, Args, undefined).
+
+%% @deprecated
 %% @doc Return projection of selected documents.
 %%      Empty projection [] means full projection.
--spec find(pid(), colldb(), selector(), map()) -> cursor().
-find(Connection, Coll, Selector, Args) ->
+-spec find(pid(), colldb(), selector(), map(), database()) -> {ok, cursor()} | [].
+find(Connection, Coll, Selector, Args, Db) ->
   Projector = maps:get(projector, Args, #{}),
   Skip = maps:get(skip, Args, 0),
   BatchSize = maps:get(batchsize, Args, 0),
-  mc_action_man:read(Connection, #'query'{
-    collection = Coll,
-    selector = Selector,
-    projector = Projector,
-    skip = Skip,
-    batchsize = BatchSize
-  }).
+  ReadPref = maps:get(readopts, Args, #{<<"mode">> => <<"primary">>}),
+  find(Connection,
+    #'query'{
+      database = Db,
+      collection = Coll,
+      selector = mongoc:append_read_preference(Selector, ReadPref),
+      projector = Projector,
+      skip = Skip,
+      batchsize = BatchSize,
+      slaveok = true,
+      sok_overriden = true
+    }).
 
+%% @doc Return projection of selected documents.
+%% params:
+%%  connection - mc_worker pid
+%%  collection - collection()
+%%  selector - selector()
+%%  database - insert in this database (optional)
+%%  projector - bson:document() optional
+%%  skip - int() optional
+%%  batchsize - int() optional
+%%  readopts - bson:document() optional
+find(Cmd = #{connection := Connection, collection := Collection, selector := Selector}) ->
+  DB = maps:get(database, Cmd, undefined),
+  find(Connection, Collection, Selector, Cmd, DB).
+
+-spec find(pid() | atom(), query()) -> {ok, cursor()} | [].
+find(Connection, Query) when is_record(Query, query) ->
+  case mc_connection_man:read(Connection, Query) of
+    [] -> [];
+    {ok, Cursor} when is_pid(Cursor) ->
+      {ok, Cursor}
+  end.
+
+%% @deprecated
 %% @doc Count selected documents
--spec count(pid(), colldb(), selector()) -> integer().
+-spec count(pid(), collection(), selector()) -> integer().
 count(Connection, Coll, Selector) ->
-  count(Connection, Coll, Selector, 0).
+  count(Connection, Coll, Selector, #{}).
 
+%% @deprecated
 %% @doc Count selected documents up to given max number; 0 means no max.
 %%     Ie. stops counting when max is reached to save processing time.
--spec count(pid(), colldb(), selector(), integer()) -> integer().
-count(Connection, Coll, Selector, Limit) when not is_binary(Coll) ->
-  count(Connection, mc_utils:value_to_binary(Coll), Selector, Limit);
-count(Connection, Coll, Selector, Limit) when Limit =< 0 ->
-  {true, #{<<"n">> := N}} = command(Connection, {<<"count">>, Coll, <<"query">>, Selector}),
-  trunc(N);
-count(Connection, Coll, Selector, Limit) ->
-  {true, #{<<"n">> := N}} = command(Connection, {<<"count">>, Coll, <<"query">>, Selector, <<"limit">>, Limit}),
+-spec count(pid(), collection(), selector(), map()) -> integer().
+count(Connection, Coll, Selector, Args = #{limit := Limit}) when Limit > 0 ->
+  ReadPref = maps:get(readopts, Args, #{<<"mode">> => <<"primary">>}),
+  count(Connection, {<<"count">>, Coll, <<"query">>, Selector, <<"limit">>, Limit, <<"$readPreference">>, ReadPref});
+count(Connection, Coll, Selector, Args) ->
+  ReadPref = maps:get(readopts, Args, #{<<"mode">> => <<"primary">>}),
+  count(Connection, {<<"count">>, Coll, <<"query">>, Selector, <<"$readPreference">>, ReadPref}).
+
+%% @deprecated
+-spec count(pid() | atom(), bson:document()) -> integer().
+count(Connection, Query) ->
+  {true, #{<<"n">> := N}} = command(Connection, Query),
   trunc(N). % Server returns count as float
+
+%% @doc Return projection of selected documents.
+%% params:
+%%  connection - mc_worker pid
+%%  collection - collection()
+%%  selector - selector()
+%%  database - insert in this database (optional)
+%%  limit - int() optional. 0 - no limit
+%%  readopts - bson:document() optional
+count(Cmd = #{connection := Connection, collection := Collection, selector := Selector}) ->
+  ReadPref = maps:get(readopts, Cmd, #{<<"mode">> => <<"primary">>}),
+  Limit = maps:get(limit, Cmd, 0),
+  DB = maps:get(database, Cmd, undefined),
+  {true, #{<<"n">> := N}} = command(DB, Connection,
+    {<<"count">>, Collection, <<"query">>, Selector, <<"limit">>, Limit, <<"$readPreference">>, ReadPref}),
+  trunc(N).
 
 %% @doc Create index on collection according to given spec.
 %%      The key specification is a bson documents with the following fields:
-%%      key      :: bson document, for e.g. {field, 1, other, -1, location, 2d}, <strong>required</strong>
-%%      name     :: bson:utf8()
-%%      unique   :: boolean()
-%%      dropDups :: boolean()
+%%      IndexSpec      :: bson document, for e.g. {field, 1, other, -1, location, 2d}, <strong>required</strong>
 -spec ensure_index(pid(), colldb(), bson:document()) -> ok | {error, any()}.
 ensure_index(Connection, Coll, IndexSpec) ->
-  mc_connection_man:request_worker(Connection, #ensure_index{collection = Coll, index_spec = IndexSpec}).
+  ensure_index(Connection, Coll, IndexSpec, undefined).
+
+-spec ensure_index(pid(), colldb(), bson:document(), database()) -> ok | {error, any()}.
+ensure_index(Connection, Coll, IndexSpec, DB) ->
+  mc_connection_man:request_worker(Connection, #ensure_index{database = DB, collection = Coll, index_spec = IndexSpec}).
 
 %% @doc Execute given MongoDB command and return its result.
--spec command(pid(), mc_worker_api:selector()) -> {boolean(), map()}. % Action
-command(Connection, Command) ->
-  Doc = mc_action_man:read_one(Connection, #'query'{
-    collection = <<"$cmd">>,
-    selector = Command
-  }),
-  mc_connection_man:process_reply(Doc, Command).
+-spec command(pid(), selector()) -> {boolean(), map()} | {ok, cursor()}.
+command(Connection, Command) -> mc_connection_man:command(Connection, Command).
 
-%% @doc Execute MongoDB command in this thread
--spec sync_command(port(), binary(), mc_worker_api:selector(), module()) -> {boolean(), map()}.
-sync_command(Socket, Database, Command, SetOpts) ->
-  Doc = mc_action_man:read_one_sync(Socket, Database, #'query'{
-    collection = <<"$cmd">>,
-    selector = Command
-  }, SetOpts),
-  mc_connection_man:process_reply(Doc, Command).
+%% @doc Execute given MongoDB command on specific database and return its result.
+-spec command(database(), pid(), selector()) -> {boolean(), map()} | {ok, cursor()}.
+command(undefined, Connection, Command) ->
+  command(Connection, Command);
+command(Db, Connection, Command) ->
+  mc_connection_man:database_command(Connection, Db, Command).
 
+command(Db, Connection, Command, IsSlaveOk) ->
+  mc_connection_man:database_command(Connection, Db, Command, IsSlaveOk).
+
+
+%% @private
 -spec prepare(tuple() | list() | map(), fun()) -> list().
-prepare(Docs, AssignFun) when is_tuple(Docs) ->
+prepare(Docs, AssignFun) when is_tuple(Docs) -> %bson
   case element(1, Docs) of
     <<"$", _/binary>> -> Docs;  %command
     _ ->  %document
@@ -246,12 +395,21 @@ prepare(Doc, AssignFun) when is_map(Doc), map_size(Doc) == 1 ->
         List -> List
       end
   end;
-prepare(Docs, AssignFun) ->
+prepare(Doc, AssignFun) when is_map(Doc) ->
+  Keys = maps:keys(Doc),
+  case [K || <<"$", _/binary>> = K <- Keys] of
+    Keys -> Doc; % multiple commands
+    _ ->  % document
+      case prepare_doc(Doc, AssignFun) of
+        Res when is_tuple(Res) -> [Res];
+        List -> List
+      end
+  end;
+prepare(Docs, AssignFun) when is_list(Docs) ->
   case prepare_doc(Docs, AssignFun) of
     Res when not is_list(Res) -> [Res];
     List -> List
   end.
-
 
 %% @private
 %% Convert maps or proplists to bson

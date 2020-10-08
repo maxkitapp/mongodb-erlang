@@ -12,7 +12,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0, start_pool/2, stop_pool/1]).
+-export([start_link/0, start_pool/2, stop_pool/1, ensure_started/0]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -24,13 +24,21 @@
 %%% API functions
 %%%===================================================================
 start_pool(SizeArgs, WorkerArgs) ->
-  PoolArgs = [{worker_module, mc_worker}] ++ SizeArgs,
+  PoolArgs = [{worker_module, {mc_worker_api, connect}}] ++ SizeArgs,
   supervisor:start_child(?MODULE, [PoolArgs, WorkerArgs]).
 
 stop_pool(Pid) when is_pid(Pid) ->
   poolboy:stop(Pid);
 stop_pool(_) ->
   ok.
+
+-spec ensure_started() -> ok | {error, term()}.
+ensure_started() ->
+  case start_link() of
+    {ok, _} -> ok;
+    {error, {already_started, _}} -> ok;
+    {error, _} = Err -> Err
+  end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -62,8 +70,8 @@ start_link() ->
     [ChildSpec :: supervisor:child_spec()]
   }} | ignore).
 init([]) ->
-  {ok, {{simple_one_for_one, 10, 10},
-    [{worker_pool, {poolboy, start_link, []}, temporary, 5000, worker, [poolboy]}]}}.
+  {ok, {{simple_one_for_one, 1000, 3600},
+    [{worker_pool, {poolboy, start_link, []}, transient, 5000, worker, [poolboy]}]}}.
 
 %%%===================================================================
 %%% Internal functions

@@ -1,7 +1,9 @@
 .*
+!.travis.yml
 ebin/
 deps/
 logs/
 *.beam
 variables-ct*
 *.iml
+data
