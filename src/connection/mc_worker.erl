@@ -60,6 +60,9 @@ init(Options) ->
           net_module = NetModule,
           next_req_fun = NextReqFun});
     Error ->
+      timer:sleep(5000),
+      lz_alarm:raise_mongodb_conn_fail(),
+      erlang:error(mongodb_conn_fail),
       proc_lib:init_ack(Error)
   end.
 

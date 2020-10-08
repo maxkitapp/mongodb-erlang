@@ -71,7 +71,7 @@ start_link() ->
   }} | ignore).
 init([]) ->
   {ok, {{simple_one_for_one, 1000, 3600},
-    [{worker_pool, {poolboy, start_link, []}, transient, 5000, worker, [poolboy]}]}}.
+    [{worker_pool, {poolboy, start_link, []}, temporary, 5000, worker, [poolboy]}]}}.
 
 %%%===================================================================
 %%% Internal functions
